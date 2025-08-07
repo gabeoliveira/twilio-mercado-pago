@@ -15,7 +15,8 @@ jobs:
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-          twilio login --auth-token ${{ secrets.AUTH_TOKEN }} --account-sid ${{ secrets.ACCOUNT_SID }}
+          twilio config:set account-sid ${{ secrets.ACCOUNT_SID }}
+          twilio config:set auth-token ${{ secrets.AUTH_TOKEN }}
 
       - name: Upload and Approve Content Templates
         run: |
