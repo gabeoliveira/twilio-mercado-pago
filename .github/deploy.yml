@@ -1,0 +1,58 @@
+name: Deploy Twilio Mercado Pago
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Twilio CLI
+        run: |
+          npm install -g twilio-cli
+          twilio plugins:install @twilio-labs/plugin-serverless
+          twilio login --auth-token ${{ secrets.TWILIO_AUTH_TOKEN }} --account-sid ${{ secrets.TWILIO_ACCOUNT_SID }}
+
+      - name: Upload and Approve Content Templates
+        id: content
+        run: |
+          TEMPLATE_SIDS=""
+          for file in content-templates/*.json; do
+            NAME=$(basename "$file" .json)
+            echo "Uploading template: $NAME"
+
+            TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
+              --content-language pt_BR \
+              --friendly-name "$NAME" \
+              --channel-whatsapp '{"types":'$(jq .types "$file")'}' \
+              --json)
+
+            SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
+
+            echo "Template SID for $NAME: $SID"
+
+            # Submit for approval
+            twilio api:content:v1:content:approval:create \
+              --path-content-sid "$SID" \
+              --channel-type whatsapp \
+              --category utility
+
+            # Export for .env override
+            echo "$NAME=$SID" >> content-templates/.env.twilio
+          done
+
+      - name: Copy .env
+        run: cp content-templates/.env.twilio mercado-pago-serverless/.env
+
+      - name: Deploy Serverless Functions
+        working-directory: mercado-pago-serverless
+        run: |
+          twilio serverless:deploy \
+            --env .env \
+            --service-name mercado-pago-serverless \
+            --force

@@ -1,0 +1,15 @@
+{
+  "friendlyName": "order_status",
+  "language": "pt_BR",
+  "variables": {
+    "additional_message": "Por favor, espere alguns minutos para tentar novamente ou tente novamente com outro meio de pagamento",
+    "name": "cliente",
+    "order_id": "123456",
+    "status": "RECUSADO"
+  },
+  "types": {
+    "twilio/text": {
+      "body": "Olá *{{name}}*, seu pagamento para o pedido de número *{{order_id}}* foi *{{status}}*. {{additional_message}}"
+    }
+  }
+}

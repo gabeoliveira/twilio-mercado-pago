@@ -1,0 +1,29 @@
+{
+  "friendlyName": "template_pagamento",
+  "language": "pt_BR",
+  "variables": {},
+  "types": {
+    "twilio/pay": {
+      "body": "{{body}}",
+      "country_code": "BR",
+      "currency_code": "BRL",
+      "items": "{{items}}",
+      "merchant_identifier": null,
+      "merchant_name": "{{merchant_name}}",
+      "order_expiration": "{{order_expiration}}",
+      "order_expiration_description": "Expira em 15 minutos",
+      "payment_id": "{{payment_id}}",
+      "payment_url": null,
+      "pix": {
+        "code": "{{code}}",
+        "key": "{{key}}",
+        "key_type": "{{key_type}}",
+        "status": null,
+        "type": "ORDER_DETAILS"
+      },
+      "subtotal_amount": "{{subtotal_amount}}",
+      "total_amount": "{{total_amount}}",
+      "total_label": null
+    }
+  }
+}
