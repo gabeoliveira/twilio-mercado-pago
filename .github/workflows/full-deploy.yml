@@ -1,4 +1,4 @@
-name: Full Deploy: Templates + Serverless
+name: "Full Deploy: Templates + Serverless"
 
 on:
   workflow_dispatch:
@@ -31,10 +31,12 @@ jobs:
             NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
             echo "Uploading template: $NAME"
 
+            TYPES_JSON=$(jq -c .types "$file")
+
             TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
               --content-language pt_BR \
               --friendly-name "$NAME" \
-              --channel-whatsapp '{"types":'$(jq .types "$file")'}' \
+              --channel-whatsapp "{\"types\":$TYPES_JSON}" \
               --json)
 
             SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
