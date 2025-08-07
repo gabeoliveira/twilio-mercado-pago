@@ -11,12 +11,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Twilio CLI
+      - name: Install Twilio CLI and authenticate
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-          twilio config:set account-sid=${{ secrets.ACCOUNT_SID }}
-          twilio config:set auth-token=${{ secrets.AUTH_TOKEN }}
+
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
       - name: Upload and Approve Content Templates
         run: |
