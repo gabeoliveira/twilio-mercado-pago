@@ -1,0 +1,60 @@
+name: Deploy Content Templates
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "content-templates/**"
+
+jobs:
+  deploy-templates:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Twilio CLI
+        run: |
+          npm install -g twilio-cli
+          twilio plugins:install @twilio-labs/plugin-serverless
+          twilio login --auth-token ${{ secrets.AUTH_TOKEN }} --account-sid ${{ secrets.ACCOUNT_SID }}
+
+      - name: Upload and Approve Content Templates
+        run: |
+          mkdir -p .env-temp
+          ENV_FILE=".env-temp/templates.env"
+
+          for file in content-templates/*.json; do
+            NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
+            echo "Uploading template: $NAME"
+
+            TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
+              --content-language pt_BR \
+              --friendly-name "$NAME" \
+              --channel-whatsapp '{"types":'$(jq .types "$file")'}' \
+              --json)
+
+            SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
+
+            echo "$NAME SID: $SID"
+
+            twilio api:content:v1:content:approval:create \
+              --path-content-sid "$SID" \
+              --channel-type whatsapp \
+              --category utility
+
+            if [[ "$NAME" == "PIX" ]]; then
+              echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
+            elif [[ "$NAME" == "CARD" ]]; then
+              echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
+            elif [[ "$NAME" == "STATUS" ]]; then
+              echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
+            fi
+          done
+
+      - name: Upload .env file artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: templates-env
+          path: .env-temp/templates.env

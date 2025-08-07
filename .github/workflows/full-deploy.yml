@@ -1,11 +1,10 @@
-name: Deploy Twilio Mercado Pago
+name: Full Deploy: Templates + Serverless
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  deploy:
+  deploy-all:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,14 +15,20 @@ jobs:
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-          twilio login --auth-token ${{ secrets.TWILIO_AUTH_TOKEN }} --account-sid ${{ secrets.TWILIO_ACCOUNT_SID }}
+          twilio login --auth-token ${{ secrets.AUTH_TOKEN }} --account-sid ${{ secrets.ACCOUNT_SID }}
 
       - name: Upload and Approve Content Templates
-        id: content
         run: |
-          TEMPLATE_SIDS=""
+          mkdir -p .env-temp
+          ENV_FILE=".env-temp/serverless.env"
+
+          echo "ACCOUNT_SID=${{ secrets.ACCOUNT_SID }}" >> $ENV_FILE
+          echo "AUTH_TOKEN=${{ secrets.AUTH_TOKEN }}" >> $ENV_FILE
+          echo "MERCADO_PAGO_ACCESS_TOKEN=${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}" >> $ENV_FILE
+          echo "WHATSAPP_FROM_NUMBER=${{ secrets.WHATSAPP_FROM_NUMBER }}" >> $ENV_FILE
+
           for file in content-templates/*.json; do
-            NAME=$(basename "$file" .json)
+            NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
             echo "Uploading template: $NAME"
 
             TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
@@ -34,24 +39,26 @@ jobs:
 
             SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
 
-            echo "Template SID for $NAME: $SID"
+            echo "$NAME SID: $SID"
 
-            # Submit for approval
             twilio api:content:v1:content:approval:create \
               --path-content-sid "$SID" \
               --channel-type whatsapp \
               --category utility
 
-            # Export for .env override
-            echo "$NAME=$SID" >> content-templates/.env.twilio
+            if [[ "$NAME" == "PIX" ]]; then
+              echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
+            elif [[ "$NAME" == "CARD" ]]; then
+              echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
+            elif [[ "$NAME" == "STATUS" ]]; then
+              echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
+            fi
           done
-
-      - name: Copy .env
-        run: cp content-templates/.env.twilio mercado-pago-serverless/.env
 
       - name: Deploy Serverless Functions
         working-directory: mercado-pago-serverless
         run: |
+          cp ../.env-temp/serverless.env .env
           twilio serverless:deploy \
             --env .env \
             --service-name mercado-pago-serverless \
