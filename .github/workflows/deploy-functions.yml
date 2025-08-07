@@ -32,8 +32,8 @@ jobs:
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-          twilio config:set account-sid ${{ secrets.ACCOUNT_SID }}
-          twilio config:set auth-token ${{ secrets.AUTH_TOKEN }}
+          twilio config:set account-sid=${{ secrets.ACCOUNT_SID }}
+          twilio config:set auth-token=${{ secrets.AUTH_TOKEN }}
 
       - name: Deploy Serverless Functions
         working-directory: mercado-pago-serverless
