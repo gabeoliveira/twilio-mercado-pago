@@ -34,23 +34,33 @@ jobs:
             NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
             echo "Uploading template: $NAME"
 
+            # Extract the 'types' object (compact JSON)
             TYPES_JSON=$(jq -c .types "$file")
 
+            # Create (or re-create) the Content using correct flags
             TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
-              --content-language pt_BR \
               --friendly-name "$NAME" \
-              --channel-whatsapp "{\"types\":$TYPES_JSON}" \
-              --json)
+              --language pt_BR \
+              --types "$TYPES_JSON" \
+              --output json)
+
+            echo "Raw content create output:"
+            echo "$TEMPLATE_OUTPUT"
 
             SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
-
+            if [ -z "$SID" ] || [ "$SID" = "null" ]; then
+              echo "❌ Failed to create content for $NAME. Output above."
+              exit 1
+            fi
             echo "$NAME SID: $SID"
 
-            twilio api:content:v1:content:approval:create \
-              --path-content-sid "$SID" \
+            # Submit WhatsApp approval (Utility)
+            twilio api:content:v1:approvals:create \
+              --content-sid "$SID" \
               --channel-type whatsapp \
               --category utility
 
+            # Map to env var names used by your Functions
             if [[ "$NAME" == "PIX" ]]; then
               echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
             elif [[ "$NAME" == "CARD" ]]; then
