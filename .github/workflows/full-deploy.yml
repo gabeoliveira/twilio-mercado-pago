@@ -27,17 +27,11 @@ jobs:
         env:
           TW_ACC: ${{ secrets.ACCOUNT_SID }}
           TW_AUTH: ${{ secrets.AUTH_TOKEN }}
-          WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
-          MP_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p .env-temp
-          ENV_FILE=".env-temp/serverless.env"
-
-          echo "ACCOUNT_SID=${TW_ACC}" >> $ENV_FILE
-          echo "AUTH_TOKEN=${TW_AUTH}" >> $ENV_FILE
-          echo "MERCADO_PAGO_ACCESS_TOKEN=${MP_TOKEN}" >> $ENV_FILE
-          echo "WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}" >> $ENV_FILE
+          ENV_FILE=".env-temp/templates.env"
+          : > "$ENV_FILE"
 
           for file in content-templates/*.json; do
             NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
@@ -49,37 +43,52 @@ jobs:
               --data-binary @"$file" \
               https://content.twilio.com/v1/Content)
 
-            echo "Raw create response: $CREATE_RESP"
             SID=$(echo "$CREATE_RESP" | jq -r '.sid // empty')
             if [ -z "$SID" ]; then
               echo "❌ Failed to create Content for $NAME"
+              echo "$CREATE_RESP"
               exit 1
             fi
             echo "$NAME SID: $SID"
 
-            # Submit WhatsApp approval (Utility)
-            APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+            curl -sS -u "${TW_ACC}:${TW_AUTH}" \
               -H 'Content-Type: application/x-www-form-urlencoded' \
               -H 'Accept: application/json' \
               -X POST "https://content.twilio.com/v1/Content/${SID}/Approval" \
               -d ChannelType=whatsapp \
-              -d Category=utility)
-            echo "Approval response: $APPROVE_RESP"
+              -d Category=utility > /dev/null
 
-            # Map to env vars your Functions expect
             if [[ "$NAME" == "PIX" ]]; then
-              echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
+              echo "PAYMENT_CONTENT_SID=$SID" >> "$ENV_FILE"
             elif [[ "$NAME" == "CARD" ]]; then
-              echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
+              echo "CREDIT_CARD_CONTENT_SID=$SID" >> "$ENV_FILE"
             elif [[ "$NAME" == "STATUS" ]]; then
-              echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
+              echo "ORDER_STATUS_CONTENT_SID=$SID" >> "$ENV_FILE"
             fi
           done
 
       - name: Deploy Serverless Functions
         working-directory: mercado-pago-serverless
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
+          WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
-          cp ../.env-temp/serverless.env .env
+          set -euo pipefail
+          # Start with the template SIDs produced earlier
+          cp ../.env-temp/templates.env .env
+
+          # Append runtime secrets used by your Functions
+          {
+            echo "MERCADO_PAGO_ACCESS_TOKEN=$MERCADO_PAGO_ACCESS_TOKEN"
+            echo "WHATSAPP_FROM_NUMBER=$WHATSAPP_FROM_NUMBER"
+          } >> .env
+
+          echo "Built .env:"
+          cat .env
+
+          # Auth via env vars above; no profile needed
           twilio serverless:deploy \
             --env .env \
             --service-name mercado-pago-serverless \
