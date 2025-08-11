@@ -23,14 +23,14 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
-      - name: Upload and Approve Content Templates (via REST)
+      - name: Upload and Approve Content Templates (JSON POST)
         env:
           TW_ACC: ${{ secrets.ACCOUNT_SID }}
           TW_AUTH: ${{ secrets.AUTH_TOKEN }}
           WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
           MP_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p .env-temp
           ENV_FILE=".env-temp/serverless.env"
 
@@ -41,29 +41,27 @@ jobs:
 
           for file in content-templates/*.json; do
             NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
-            FRIENDLY=$(jq -r '.friendlyName // "'"$NAME"'"' "$file")
-            LANG=$(jq -r '.language // "pt_BR"' "$file")
-            TYPES_JSON=$(jq -c .types "$file")
-
-            echo "Creating content: $FRIENDLY ($NAME)"
+            echo "Creating content from file: $file (NAME=$NAME)"
 
             CREATE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
-              https://content.twilio.com/v1/Content \
-              -d FriendlyName="$FRIENDLY" \
-              -d Language="$LANG" \
-              --data-urlencode Types="$TYPES_JSON")
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              --data-binary @"$file" \
+              https://content.twilio.com/v1/Content)
 
             echo "Raw create response: $CREATE_RESP"
-            SID=$(echo "$CREATE_RESP" | jq -r .sid)
-            if [ -z "$SID" ] || [ "$SID" = "null" ]; then
+            SID=$(echo "$CREATE_RESP" | jq -r '.sid // empty')
+            if [ -z "$SID" ]; then
               echo "❌ Failed to create Content for $NAME"
               exit 1
             fi
             echo "$NAME SID: $SID"
 
-            # Submit approval (Utility → WhatsApp)
+            # Submit WhatsApp approval (Utility)
             APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
-              -X POST https://content.twilio.com/v1/Content/${SID}/Approval \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              -H 'Accept: application/json' \
+              -X POST "https://content.twilio.com/v1/Content/${SID}/Approval" \
               -d ChannelType=whatsapp \
               -d Category=utility)
             echo "Approval response: $APPROVE_RESP"
