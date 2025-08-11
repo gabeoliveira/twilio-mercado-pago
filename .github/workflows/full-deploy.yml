@@ -64,3 +64,12 @@
         echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
       fi
     done
+
+- name: Deploy Serverless Functions
+  working-directory: mercado-pago-serverless
+  run: |
+    cp ../.env-temp/serverless.env .env
+    twilio serverless:deploy \
+      --env .env \
+      --service-name mercado-pago-serverless \
+      --force
