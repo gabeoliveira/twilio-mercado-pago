@@ -1,5 +1,5 @@
 {
-  "friendlyName": "order_status",
+  "friendly_name": "order_status",
   "language": "pt_BR",
   "variables": {
     "additional_message": "Por favor, espere alguns minutos para tentar novamente ou tente novamente com outro meio de pagamento",

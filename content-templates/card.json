@@ -1,5 +1,5 @@
 {
-  "friendlyName": "finish_credit_card_payment",
+  "friendly_name": "finish_credit_card_payment",
   "language": "pt_BR",
   "variables": {
     "payment_link": "checkout/v1/redirect?pref_id=112825565-cc2d9cab-ff0d-4fd4-ad36-18b08e661827"
@@ -8,7 +8,6 @@
     "twilio/call-to-action": {
       "actions": [
         {
-          "id": null,
           "title": "Concluir pagamento",
           "type": "URL",
           "url": "https://www.mercadopago.com.br/{{payment_link}}"
