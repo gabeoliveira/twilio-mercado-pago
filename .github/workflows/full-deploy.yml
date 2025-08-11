@@ -1,80 +1,66 @@
-name: "Full Deploy: Templates + Serverless"
+- name: Install dependencies
+  run: |
+    sudo apt-get update && sudo apt-get install -y jq
 
-on:
-  workflow_dispatch:
+- name: Install Twilio CLI (for serverless only) and set env auth
+  run: |
+    npm install -g twilio-cli
+    twilio plugins:install @twilio-labs/plugin-serverless
+  env:
+    TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+    TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
-jobs:
-  deploy-all:
-    runs-on: ubuntu-latest
+- name: Upload and Approve Content Templates (via REST)
+  env:
+    TW_ACC: ${{ secrets.ACCOUNT_SID }}
+    TW_AUTH: ${{ secrets.AUTH_TOKEN }}
+    WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
+    MP_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
+  run: |
+    set -e
+    mkdir -p .env-temp
+    ENV_FILE=".env-temp/serverless.env"
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    echo "ACCOUNT_SID=${TW_ACC}" >> $ENV_FILE
+    echo "AUTH_TOKEN=${TW_AUTH}" >> $ENV_FILE
+    echo "MERCADO_PAGO_ACCESS_TOKEN=${MP_TOKEN}" >> $ENV_FILE
+    echo "WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}" >> $ENV_FILE
 
-      - name: Install Twilio CLI and authenticate
-        run: |
-          npm install -g twilio-cli
-          twilio plugins:install @twilio-labs/plugin-serverless
+    for file in content-templates/*.json; do
+      NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
+      FRIENDLY=$(jq -r '.friendlyName // "'"$NAME"'"' "$file")
+      LANG=$(jq -r '.language // "pt_BR"' "$file")
+      TYPES_JSON=$(jq -c .types "$file")
 
-        env:
-          TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+      echo "Creating content: $FRIENDLY ($NAME)"
 
-      - name: Upload and Approve Content Templates
-        run: |
-          mkdir -p .env-temp
-          ENV_FILE=".env-temp/serverless.env"
+      CREATE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+        https://content.twilio.com/v1/Content \
+        -d FriendlyName="$FRIENDLY" \
+        -d Language="$LANG" \
+        --data-urlencode Types="$TYPES_JSON")
 
-          echo "ACCOUNT_SID=${{ secrets.ACCOUNT_SID }}" >> $ENV_FILE
-          echo "AUTH_TOKEN=${{ secrets.AUTH_TOKEN }}" >> $ENV_FILE
-          echo "MERCADO_PAGO_ACCESS_TOKEN=${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}" >> $ENV_FILE
-          echo "WHATSAPP_FROM_NUMBER=${{ secrets.WHATSAPP_FROM_NUMBER }}" >> $ENV_FILE
+      echo "Raw create response: $CREATE_RESP"
+      SID=$(echo "$CREATE_RESP" | jq -r .sid)
+      if [ -z "$SID" ] || [ "$SID" = "null" ]; then
+        echo "❌ Failed to create Content for $NAME"
+        exit 1
+      fi
+      echo "$NAME SID: $SID"
 
-          for file in content-templates/*.json; do
-            NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
-            echo "Uploading template: $NAME"
+      # Submit approval (Utility → WhatsApp)
+      APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+        -X POST https://content.twilio.com/v1/Content/${SID}/Approval \
+        -d ChannelType=whatsapp \
+        -d Category=utility)
+      echo "Approval response: $APPROVE_RESP"
 
-            # Extract the 'types' object (compact JSON)
-            TYPES_JSON=$(jq -c .types "$file")
-
-            # Create (or re-create) the Content using correct flags
-            TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
-              --friendly-name "$NAME" \
-              --language pt_BR \
-              --types "$TYPES_JSON" \
-              --output json)
-
-            echo "Raw content create output:"
-            echo "$TEMPLATE_OUTPUT"
-
-            SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
-            if [ -z "$SID" ] || [ "$SID" = "null" ]; then
-              echo "❌ Failed to create content for $NAME. Output above."
-              exit 1
-            fi
-            echo "$NAME SID: $SID"
-
-            # Submit WhatsApp approval (Utility)
-            twilio api:content:v1:approvals:create \
-              --content-sid "$SID" \
-              --channel-type whatsapp \
-              --category utility
-
-            # Map to env var names used by your Functions
-            if [[ "$NAME" == "PIX" ]]; then
-              echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
-            elif [[ "$NAME" == "CARD" ]]; then
-              echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
-            elif [[ "$NAME" == "STATUS" ]]; then
-              echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
-            fi
-          done
-
-      - name: Deploy Serverless Functions
-        working-directory: mercado-pago-serverless
-        run: |
-          cp ../.env-temp/serverless.env .env
-          twilio serverless:deploy \
-            --env .env \
-            --service-name mercado-pago-serverless \
-            --force
+      # Map to env vars your Functions expect
+      if [[ "$NAME" == "PIX" ]]; then
+        echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
+      elif [[ "$NAME" == "CARD" ]]; then
+        echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
+      elif [[ "$NAME" == "STATUS" ]]; then
+        echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
+      fi
+    done
