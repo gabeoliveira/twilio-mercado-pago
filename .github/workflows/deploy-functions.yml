@@ -1,3 +1,4 @@
+# .github/workflows/deploy-functions.yml
 name: Deploy Twilio Serverless
 
 on:
@@ -8,36 +9,51 @@ on:
 jobs:
   deploy-functions:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Download template env file (if exists)
+      - name: Download template env (if exists)
         uses: actions/download-artifact@v3
         with:
           name: templates-env
           path: mercado-pago-serverless
         continue-on-error: true
 
-      - name: Add base environment values
-        run: |
-          ENV_FILE=mercado-pago-serverless/.env
-          echo "ACCOUNT_SID=${{ secrets.ACCOUNT_SID }}" >> $ENV_FILE
-          echo "AUTH_TOKEN=${{ secrets.AUTH_TOKEN }}" >> $ENV_FILE
-          echo "MERCADO_PAGO_ACCESS_TOKEN=${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}" >> $ENV_FILE
-          echo "WHATSAPP_FROM_NUMBER=${{ secrets.WHATSAPP_FROM_NUMBER }}" >> $ENV_FILE
-
       - name: Install Twilio CLI
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-          twilio config:set account-sid=${{ secrets.ACCOUNT_SID }}
-          twilio config:set auth-token=${{ secrets.AUTH_TOKEN }}
 
-      - name: Deploy Serverless Functions
+      - name: Build .env and Deploy
         working-directory: mercado-pago-serverless
+        env:
+          # Twilio CLI auth via env (no profile)
+          TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+
+          # Runtime secrets
+          ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
+          WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
+          set -euo pipefail
+          # start with SIDs from the templates workflow if present
+          cp ./templates.env .env || true
+
+          # append runtime secrets
+          cat <<EOF >> .env
+          ACCOUNT_SID=${ACCOUNT_SID}
+          AUTH_TOKEN=${AUTH_TOKEN}
+          MERCADO_PAGO_ACCESS_TOKEN=${MERCADO_PAGO_ACCESS_TOKEN}
+          WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}
+          EOF
+
+          echo "Built .env:"
+          cat .env
+
+          # deploy
           twilio serverless:deploy \
             --env .env \
             --service-name mercado-pago-serverless \

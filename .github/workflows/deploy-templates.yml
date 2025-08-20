@@ -1,3 +1,4 @@
+# .github/workflows/deploy-templates.yml
 name: Deploy Content Templates
 
 on:
@@ -9,52 +10,65 @@ on:
 jobs:
   deploy-templates:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Twilio CLI
-        run: |
-          npm install -g twilio-cli
-          twilio plugins:install @twilio-labs/plugin-serverless
-          twilio config:set account-sid=${{ secrets.ACCOUNT_SID }}
-          twilio config:set auth-token=${{ secrets.AUTH_TOKEN }}
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Upload and Approve Content Templates
+      - name: Create & Approve Content (REST)
+        env:
+          TW_ACC: ${{ secrets.ACCOUNT_SID }}
+          TW_AUTH: ${{ secrets.AUTH_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p .env-temp
           ENV_FILE=".env-temp/templates.env"
+          : > "$ENV_FILE"
 
           for file in content-templates/*.json; do
-            NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
-            echo "Uploading template: $NAME"
+            NAME=$(basename "$file" .json)
+            SLUG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g')
 
-            TEMPLATE_OUTPUT=$(twilio api:content:v1:content:create \
-              --content-language pt_BR \
-              --friendly-name "$NAME" \
-              --channel-whatsapp '{"types":'$(jq .types "$file")'}' \
-              --json)
+            echo "→ Creating content from: $file (slug=$SLUG)"
 
-            SID=$(echo "$TEMPLATE_OUTPUT" | jq -r .sid)
+            CREATE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              --data-binary @"$file" \
+              https://content.twilio.com/v1/Content)
 
-            echo "$NAME SID: $SID"
+            echo "Create response: $CREATE_RESP"
+            SID=$(echo "$CREATE_RESP" | jq -r '.sid // empty')
+            if [ -z "$SID" ]; then
+              echo "❌ Failed to create Content for $NAME"
+              exit 1
+            fi
 
-            twilio api:content:v1:content:approval:create \
-              --path-content-sid "$SID" \
-              --channel-type whatsapp \
-              --category utility
+            SID_LC=$(echo "$SID" | tr '[:upper:]' '[:lower:]')
+            APPROVAL_NAME="${SID_LC}_${SLUG}"
 
-            if [[ "$NAME" == "PIX" ]]; then
-              echo "PAYMENT_CONTENT_SID=$SID" >> $ENV_FILE
-            elif [[ "$NAME" == "CARD" ]]; then
-              echo "CREDIT_CARD_CONTENT_SID=$SID" >> $ENV_FILE
-            elif [[ "$NAME" == "STATUS" ]]; then
-              echo "ORDER_STATUS_CONTENT_SID=$SID" >> $ENV_FILE
+            APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -X POST "https://content.twilio.com/v1/Content/${SID}/ApprovalRequests/whatsapp" \
+              -d "{\"name\":\"${APPROVAL_NAME}\",\"category\":\"UTILITY\"}")
+
+            echo "Approval response: $APPROVE_RESP"
+
+            # Map to env vars for the Functions deploy
+            NAME_UPPER=$(echo "$NAME" | tr '[:lower:]' '[:upper:]')
+            if [ "$NAME_UPPER" = "PIX" ]; then
+              echo "PAYMENT_CONTENT_SID=$SID" >> "$ENV_FILE"
+            elif [ "$NAME_UPPER" = "CARD" ]; then
+              echo "CREDIT_CARD_CONTENT_SID=$SID" >> "$ENV_FILE"
+            elif [ "$NAME_UPPER" = "STATUS" ]; then
+              echo "ORDER_STATUS_CONTENT_SID=$SID" >> "$ENV_FILE"
             fi
           done
 
-      - name: Upload .env file artifact
+      - name: Upload template SIDs artifact
         uses: actions/upload-artifact@v3
         with:
           name: templates-env

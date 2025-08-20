@@ -79,6 +79,10 @@ web_modules/
 .env.production.local
 .env.local
 
+# Ignore temporary env files
+.env-temp/
+mercado-pago-serverless/.env
+mercado-pago-serverless/.env.local
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

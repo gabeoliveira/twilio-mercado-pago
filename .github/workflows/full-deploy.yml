@@ -1,3 +1,4 @@
+# .github/workflows/full-deploy.yml
 name: "Full Deploy: Templates + Serverless"
 
 on:
@@ -6,24 +7,20 @@ on:
 jobs:
   deploy-all:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install Twilio CLI (for serverless only) and set env auth
+      - name: Install Twilio CLI
         run: |
           npm install -g twilio-cli
           twilio plugins:install @twilio-labs/plugin-serverless
-        env:
-          TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
-      - name: Upload and Approve Content Templates (JSON POST)
+      # Create & approve content (no MP/WA secrets here)
+      - name: Create & Approve Content (REST)
         env:
           TW_ACC: ${{ secrets.ACCOUNT_SID }}
           TW_AUTH: ${{ secrets.AUTH_TOKEN }}
@@ -34,8 +31,8 @@ jobs:
           : > "$ENV_FILE"
 
           for file in content-templates/*.json; do
-            NAME=$(basename "$file" .json | tr 'a-z' 'A-Z')
-            echo "Creating content from file: $file (NAME=$NAME)"
+            NAME=$(basename "$file" .json)
+            SLUG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g')
 
             CREATE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
               -H 'Content-Type: application/json' \
@@ -46,49 +43,53 @@ jobs:
             SID=$(echo "$CREATE_RESP" | jq -r '.sid // empty')
             if [ -z "$SID" ]; then
               echo "❌ Failed to create Content for $NAME"
-              echo "$CREATE_RESP"
               exit 1
             fi
-            echo "$NAME SID: $SID"
 
-            curl -sS -u "${TW_ACC}:${TW_AUTH}" \
-              -H 'Content-Type: application/x-www-form-urlencoded' \
+            SID_LC=$(echo "$SID" | tr '[:upper:]' '[:lower:]')
+            APPROVAL_NAME="${SID_LC}_${SLUG}"
+
+            APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+              -H 'Content-Type: application/json' \
               -H 'Accept: application/json' \
-              -X POST "https://content.twilio.com/v1/Content/${SID}/Approval" \
-              -d ChannelType=whatsapp \
-              -d Category=utility > /dev/null
+              -X POST "https://content.twilio.com/v1/Content/${SID}/ApprovalRequests/whatsapp" \
+              -d "{\"name\":\"${APPROVAL_NAME}\",\"category\":\"UTILITY\"}")
 
-            if [[ "$NAME" == "PIX" ]]; then
+            echo "Approved: $APPROVE_RESP"
+
+            NAME_UPPER=$(echo "$NAME" | tr '[:lower:]' '[:upper:]')
+            if [ "$NAME_UPPER" = "PIX" ]; then
               echo "PAYMENT_CONTENT_SID=$SID" >> "$ENV_FILE"
-            elif [[ "$NAME" == "CARD" ]]; then
+            elif [ "$NAME_UPPER" = "CARD" ]; then
               echo "CREDIT_CARD_CONTENT_SID=$SID" >> "$ENV_FILE"
-            elif [[ "$NAME" == "STATUS" ]]; then
+            elif [ "$NAME_UPPER" = "STATUS" ]; then
               echo "ORDER_STATUS_CONTENT_SID=$SID" >> "$ENV_FILE"
             fi
           done
 
-      - name: Deploy Serverless Functions
+      - name: Build .env and Deploy
         working-directory: mercado-pago-serverless
         env:
           TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+
+          ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
           MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
           WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
           set -euo pipefail
-          # Start with the template SIDs produced earlier
-          cp ../.env-temp/templates.env .env
-
-          # Append runtime secrets used by your Functions
-          {
-            echo "MERCADO_PAGO_ACCESS_TOKEN=$MERCADO_PAGO_ACCESS_TOKEN"
-            echo "WHATSAPP_FROM_NUMBER=$WHATSAPP_FROM_NUMBER"
-          } >> .env
+          cp ../.env-temp/templates.env .env || true
+          cat <<EOF >> .env
+          ACCOUNT_SID=${ACCOUNT_SID}
+          AUTH_TOKEN=${AUTH_TOKEN}
+          MERCADO_PAGO_ACCESS_TOKEN=${MERCADO_PAGO_ACCESS_TOKEN}
+          WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}
+          EOF
 
           echo "Built .env:"
           cat .env
 
-          # Auth via env vars above; no profile needed
           twilio serverless:deploy \
             --env .env \
             --service-name mercado-pago-serverless \
