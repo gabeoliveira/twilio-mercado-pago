@@ -7,12 +7,20 @@ on:
 jobs:
   deploy-all:
     runs-on: ubuntu-latest
+    # principle of least privilege
+    permissions:
+      contents: read
+    concurrency:
+      group: full-deploy-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Install Twilio CLI
         run: |
@@ -30,32 +38,42 @@ jobs:
           ENV_FILE=".env-temp/templates.env"
           : > "$ENV_FILE"
 
+          create_content() {
+            local file="$1"
+            curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              --data-binary @"$file" \
+              https://content.twilio.com/v1/Content
+          }
+
+          approve_whatsapp() {
+            local sid="$1" name="$2"
+            curl -sS -u "${TW_ACC}:${TW_AUTH}" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -X POST "https://content.twilio.com/v1/Content/${sid}/ApprovalRequests/whatsapp" \
+              -d "{\"name\":\"${name}\",\"category\":\"UTILITY\"}"
+          }
+
           for file in content-templates/*.json; do
             NAME=$(basename "$file" .json)
             SLUG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g')
 
-            CREATE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
-              -H 'Content-Type: application/json' \
-              -H 'Accept: application/json' \
-              --data-binary @"$file" \
-              https://content.twilio.com/v1/Content)
-
+            CREATE_RESP=$(create_content "$file")
             SID=$(echo "$CREATE_RESP" | jq -r '.sid // empty')
             if [ -z "$SID" ]; then
               echo "❌ Failed to create Content for $NAME"
+              echo "$CREATE_RESP" | jq -C .
               exit 1
             fi
 
             SID_LC=$(echo "$SID" | tr '[:upper:]' '[:lower:]')
             APPROVAL_NAME="${SID_LC}_${SLUG}"
 
-            APPROVE_RESP=$(curl -sS -u "${TW_ACC}:${TW_AUTH}" \
-              -H 'Content-Type: application/json' \
-              -H 'Accept: application/json' \
-              -X POST "https://content.twilio.com/v1/Content/${SID}/ApprovalRequests/whatsapp" \
-              -d "{\"name\":\"${APPROVAL_NAME}\",\"category\":\"UTILITY\"}")
-
-            echo "Approved: $APPROVE_RESP"
+            APPROVE_RESP=$(approve_whatsapp "$SID" "$APPROVAL_NAME")
+            # Minimal logging: do not echo full bodies
+            echo "Created & submitted for approval: name=$NAME sid=$SID approval_name=$APPROVAL_NAME"
 
             NAME_UPPER=$(echo "$NAME" | tr '[:lower:]' '[:upper:]')
             if [ "$NAME_UPPER" = "PIX" ]; then
@@ -70,16 +88,22 @@ jobs:
       - name: Build .env and Deploy
         working-directory: mercado-pago-serverless
         env:
+          # Twilio CLI auth via env (no profile)
           TWILIO_ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
 
+          # Runtime secrets
           ACCOUNT_SID: ${{ secrets.ACCOUNT_SID }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
           MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
           WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
           set -euo pipefail
+
+          # Bring SIDs from the previous step
           cp ../.env-temp/templates.env .env || true
+
+          # Append runtime secrets (values hidden)
           cat <<EOF >> .env
           ACCOUNT_SID=${ACCOUNT_SID}
           AUTH_TOKEN=${AUTH_TOKEN}
@@ -87,10 +111,35 @@ jobs:
           WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}
           EOF
 
-          echo "Built .env:"
-          cat .env
+          # Sanity check: ensure .env is not empty
+          if [[ ! -s .env ]]; then
+            echo "❌ .env is empty. Did content creation fail and/or secrets are missing?"
+            exit 1
+          fi
 
+          if grep -q '^PAYMENT_CONTENT_SID=' .env; then
+            if ! grep -Eq '^PAYMENT_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
+              echo "⚠️ PAYMENT_CONTENT_SID present but may be a placeholder."
+            fi
+          fi
+          if grep -q '^CREDIT_CARD_CONTENT_SID=' .env; then
+            if ! grep -Eq '^CREDIT_CARD_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
+              echo "⚠️ CREDIT_CARD_CONTENT_SID present but may be a placeholder."
+            fi
+          fi
+          if grep -q '^ORDER_STATUS_CONTENT_SID=' .env; then
+            if ! grep -Eq '^ORDER_STATUS_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
+              echo "⚠️ ORDER_STATUS_CONTENT_SID present but may be a placeholder."
+            fi
+          fi
+
+          echo "Built .env with $(wc -l < .env) lines (values hidden)"
+
+          # Deploy (Twilio CLI auth via env)
           twilio serverless:deploy \
             --env .env \
             --service-name mercado-pago-serverless \
             --force
+
+          # Cleanup sensitive file
+          shred -u .env || rm -f .env
