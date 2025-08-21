@@ -3,6 +3,9 @@ name: Deploy Content Templates
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy Content Templates"]
+    types: [completed]
   push:
     paths:
       - "content-templates/**"

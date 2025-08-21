@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy Content Templates"]
+    types: [completed]
 
 jobs:
   deploy-functions:
@@ -12,11 +15,23 @@ jobs:
     # principle of least privilege
     permissions:
       contents: read
+    concurrency:
+      group: deploy-functions-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download template env (if exists)
+      - name: Download template env from triggering run
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: templates-env
+          run-id: ${{ github.event.workflow_run.id }}
+          path: mercado-pago-serverless
+
+      - name: Download template env (best-effort)
+        if: ${{ github.event_name != 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
           name: templates-env
@@ -41,49 +56,70 @@ jobs:
           MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
           WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
+          # 1) Pull current env from Twilio and prime .env with it
+          #    (uses TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN from step env)
           set -euo pipefail
 
-          # Start with SIDs from the templates workflow if present
-          cp ./templates.env .env || true
+          # Choose the environment you deploy to (dev by default; use "production" if you deploy there)
+          SVCS=mercado-pago-serverless
+          ENV_NAME=dev   # or "production"
 
-          # Append runtime secrets (values not echoed)
-          cat <<EOF >> .env
-          ACCOUNT_SID=${ACCOUNT_SID}
-          AUTH_TOKEN=${AUTH_TOKEN}
-          MERCADO_PAGO_ACCESS_TOKEN=${MERCADO_PAGO_ACCESS_TOKEN}
-          WHATSAPP_FROM_NUMBER=${WHATSAPP_FROM_NUMBER}
-          EOF
+          # Get current env from Twilio (JSON), convert to KEY=VALUE lines, and create .env
+          twilio serverless:env:list \
+            --service-name "$SVCS" \
+            --environment "$ENV_NAME" \
+            --json \
+          | node -e 'const a=JSON.parse(require("fs").readFileSync(0,"utf8")); 
+            for (const {key,value} of a) { console.log(`${key}=${value}`) }' \
+          > .env || true   # if the service/env is new, this may be empty
 
-          # Sanity check: ensure .env is not empty
+          # 2) Layer artifact SIDs if present (won’t error if missing)
+          cp ./templates.env .env.tmp 2>/dev/null || touch .env.tmp
+          # merge: replace or add keys from templates.env into .env
+          awk -F= 'FNR==NR{m[$1]=$0;next} {k=$1; if(k in m){print m[k]; delete m[k]} else {print}} END{for(k in m)print m[k]}' .env.tmp .env > .env.merged
+          mv .env.merged .env
+          rm -f .env.tmp
+
+          # 3) Append/override with runtime secrets (ACCOUNT_SID, AUTH_TOKEN, MP token, WA number)
+          #    (These are authoritative; they overwrite anything existing)
+          append_or_replace () {
+            key="$1"; val="$2"
+            grep -q "^${key}=" .env && sed -i.bak "s|^${key}=.*|${key}=${val}|" .env || echo "${key}=${val}" >> .env
+          }
+          append_or_replace ACCOUNT_SID "${ACCOUNT_SID}"
+          append_or_replace AUTH_TOKEN "${AUTH_TOKEN}"
+          append_or_replace MERCADO_PAGO_ACCESS_TOKEN "${MERCADO_PAGO_ACCESS_TOKEN}"
+          append_or_replace WHATSAPP_FROM_NUMBER "${WHATSAPP_FROM_NUMBER}"
+
+          # Optional: if you keep fallback SID secrets, add them only if missing
+          append_if_missing_real () {
+            key="$1"; val="$2"
+            [[ -z "$val" ]] && return 0
+            if ! grep -q "^${key}=" .env; then
+              # only accept real-looking SIDs, not placeholders
+              if [[ "$val" =~ ^HX[0-9A-Za-z]{32}$ ]]; then
+                echo "${key}=${val}" >> .env
+              fi
+            fi
+          }
+          append_if_missing_real PAYMENT_CONTENT_SID "${PAYMENT_CONTENT_SID_SECRET:-}"
+          append_if_missing_real CREDIT_CARD_CONTENT_SID "${CREDIT_CARD_CONTENT_SID_SECRET:-}"
+          append_if_missing_real ORDER_STATUS_CONTENT_SID "${ORDER_STATUS_CONTENT_SID_SECRET:-}"
+
+          # 4) Sanity check: ensure .env has something meaningful
           if [[ ! -s .env ]]; then
-            echo "❌ .env is empty. Did the templates artifact fail to download and/or secrets are missing?"
+            echo "❌ .env is empty after merge. Aborting."
             exit 1
           fi
 
-          # Optional: validate Content SID shape if they exist (won't reveal values)
-          if grep -q '^PAYMENT_CONTENT_SID=' .env; then
-            if ! grep -Eq '^PAYMENT_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
-              echo "⚠️ PAYMENT_CONTENT_SID present but may be a placeholder."
-            fi
-          fi
-          if grep -q '^CREDIT_CARD_CONTENT_SID=' .env; then
-            if ! grep -Eq '^CREDIT_CARD_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
-              echo "⚠️ CREDIT_CARD_CONTENT_SID present but may be a placeholder."
-            fi
-          fi
-          if grep -q '^ORDER_STATUS_CONTENT_SID=' .env; then
-            if ! grep -Eq '^ORDER_STATUS_CONTENT_SID=HX[0-9A-Za-z]{32}$' .env; then
-              echo "⚠️ ORDER_STATUS_CONTENT_SID present but may be a placeholder."
-            fi
-          fi
+          echo "Built .env with $(wc -l < .env) keys (values hidden)"
 
-          echo "Built .env with $(wc -l < .env) lines (values hidden)"
-
-          # Deploy (Twilio CLI auth via env)
+          # 5) Deploy
           twilio serverless:deploy \
+            --service-name "$SVCS" \
+            --environment "$ENV_NAME" \
             --env .env \
-            --service-name mercado-pago-serverless \
             --force
 
-          # Cleanup sensitive file
+          # 6) Cleanup
           shred -u .env || rm -f .env
