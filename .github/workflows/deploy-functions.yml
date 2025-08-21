@@ -4,6 +4,9 @@ name: Deploy Twilio Serverless
 on:
   push:
     branches: [main]
+    paths:
+      - "mercado-pago-serverless/**"
+      - ".github/workflows/deploy-functions.yml" # optional: rerun when the workflow changes
   workflow_dispatch:
   workflow_run:
     workflows: ["Deploy Content Templates"]
@@ -69,70 +72,81 @@ jobs:
           MERCADO_PAGO_ACCESS_TOKEN: ${{ secrets.MERCADO_PAGO_ACCESS_TOKEN }}
           WHATSAPP_FROM_NUMBER: ${{ secrets.WHATSAPP_FROM_NUMBER }}
         run: |
-          # 1) Pull current env from Twilio and prime .env with it
-          #    (uses TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN from step env)
           set -euo pipefail
 
-          # Choose the environment you deploy to (dev by default; use "production" if you deploy there)
+          # ── 0) Config ───────────────────────────────────────────────────────────────
           SVCS=mercado-pago-serverless
           ENV_NAME=dev   # or "production"
 
-          # Get current env from Twilio (JSON), convert to KEY=VALUE lines, and create .env
-          twilio serverless:env:list \
-            --service-name "$SVCS" \
-            --environment "$ENV_NAME" \
-            --json \
-          | node -e 'const a=JSON.parse(require("fs").readFileSync(0,"utf8")); 
-            for (const {key,value} of a) { console.log(`${key}=${value}`) }' \
-          > .env || true   # if the service/env is new, this may be empty
+          # ── 1) Discover Service SID and Environment SID via Twilio REST CLI ────────
+          SERVICE_SID=""
+          ENV_SID=""
 
-          # 2) Layer artifact SIDs if present (won’t error if missing)
+          # Find the Service SID by friendly name
+          SERVICE_SID=$(twilio api:serverless:v1:services:list \
+            --limit 50 \
+            --output json \
+          | jq -r --arg n "$SVCS" '(.services // .) | map(select(.friendly_name==$n)) | .[0].sid // empty')
+
+          if [[ -n "$SERVICE_SID" ]]; then
+            # Find the Environment SID by unique_name
+            ENV_SID=$(twilio api:serverless:v1:services:environments:list \
+              --service-sid "$SERVICE_SID" \
+              --limit 50 \
+              --output json \
+            | jq -r --arg e "$ENV_NAME" '(.environments // .) | map(select(.unique_name==$e)) | .[0].sid // empty')
+          fi
+
+          # ── 2) Seed .env from existing variables (if service/env exist) ─────────────
+          : > .env
+          if [[ -n "${SERVICE_SID:-}" && -n "${ENV_SID:-}" ]]; then
+            twilio api:serverless:v1:services:environments:variables:list \
+              --service-sid "$SERVICE_SID" \
+              --environment-sid "$ENV_SID" \
+              --limit 200 \
+              --output json \
+            | jq -r '(.variables // .) | .[] | "\(.key)=\(.value)"' >> .env || true
+          fi
+
+          # ── 3) Layer artifact SIDs if present (won’t error if missing) ─────────────
           cp ./templates.env .env.tmp 2>/dev/null || touch .env.tmp
           # merge: replace or add keys from templates.env into .env
           awk -F= 'FNR==NR{m[$1]=$0;next} {k=$1; if(k in m){print m[k]; delete m[k]} else {print}} END{for(k in m)print m[k]}' .env.tmp .env > .env.merged
           mv .env.merged .env
           rm -f .env.tmp
 
-          # 3) Append/override with runtime secrets (ACCOUNT_SID, AUTH_TOKEN, MP token, WA number)
-          #    (These are authoritative; they overwrite anything existing)
-          append_or_replace () {
-            key="$1"; val="$2"
-            grep -q "^${key}=" .env && sed -i.bak "s|^${key}=.*|${key}=${val}|" .env || echo "${key}=${val}" >> .env
-          }
+          # ── 4) Append/override with runtime secrets (authoritative) ────────────────
+          append_or_replace () { key="$1"; val="$2"; grep -q "^${key}=" .env && sed -i.bak "s|^${key}=.*|${key}=${val}|" .env || echo "${key}=${val}" >> .env; }
           append_or_replace ACCOUNT_SID "${ACCOUNT_SID}"
           append_or_replace AUTH_TOKEN "${AUTH_TOKEN}"
           append_or_replace MERCADO_PAGO_ACCESS_TOKEN "${MERCADO_PAGO_ACCESS_TOKEN}"
           append_or_replace WHATSAPP_FROM_NUMBER "${WHATSAPP_FROM_NUMBER}"
 
-          # Optional: if you keep fallback SID secrets, add them only if missing
+          # Optional: accept fallback SID secrets only if missing and they look real
           append_if_missing_real () {
-            key="$1"; val="$2"
+            key="$1"; val="${2:-}"
             [[ -z "$val" ]] && return 0
             if ! grep -q "^${key}=" .env; then
-              # only accept real-looking SIDs, not placeholders
-              if [[ "$val" =~ ^HX[0-9A-Za-z]{32}$ ]]; then
-                echo "${key}=${val}" >> .env
-              fi
+              [[ "$val" =~ ^HX[0-9A-Za-z]{32}$ ]] && echo "${key}=${val}" >> .env
             fi
           }
           append_if_missing_real PAYMENT_CONTENT_SID "${PAYMENT_CONTENT_SID_SECRET:-}"
           append_if_missing_real CREDIT_CARD_CONTENT_SID "${CREDIT_CARD_CONTENT_SID_SECRET:-}"
           append_if_missing_real ORDER_STATUS_CONTENT_SID "${ORDER_STATUS_CONTENT_SID_SECRET:-}"
 
-          # 4) Sanity check: ensure .env has something meaningful
+          # ── 5) Sanity check ────────────────────────────────────────────────────────
           if [[ ! -s .env ]]; then
             echo "❌ .env is empty after merge. Aborting."
             exit 1
           fi
-
           echo "Built .env with $(wc -l < .env) keys (values hidden)"
 
-          # 5) Deploy
+          # ── 6) Deploy ──────────────────────────────────────────────────────────────
           twilio serverless:deploy \
             --service-name "$SVCS" \
             --environment "$ENV_NAME" \
             --env .env \
             --force
 
-          # 6) Cleanup
+          # ── 7) Cleanup ─────────────────────────────────────────────────────────────
           shred -u .env || rm -f .env
