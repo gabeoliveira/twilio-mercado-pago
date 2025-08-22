@@ -60,7 +60,7 @@ jobs:
           path: mercado-pago-serverless
         continue-on-error: true
 
-      - name: Fallback: fetch artifact via REST if missing
+      - name: Fallback fetch artifact via REST if missing
         if: ${{ github.event_name == 'workflow_run' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
