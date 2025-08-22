@@ -98,6 +98,15 @@ jobs:
           else
             echo "REST fallback completed, but templates.env not found in zip."
           fi
+      - name: Require templates.env for chained run
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "mercado-pago-serverless/templates.env" ]]; then
+            echo "❌ templates.env is missing for a chained run (after new templates). Aborting to avoid deploying with stale/unknown Content SIDs."
+            exit 1
+          fi
+          echo "templates.env present; continuing."
 
       - name: Install Twilio CLI
         run: |
