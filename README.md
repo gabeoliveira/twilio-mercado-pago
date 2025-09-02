@@ -34,7 +34,7 @@ A ready-for-use integration between [Twilio Messaging](https://www.twilio.com/me
 
 ## Template creation
 The repository can auto-create templates using the GitHub Action or `scripts/deploy-templates.sh`. If you prefer to create templates manually:
-1. In the [Twilio Console](https://console.twilio.com/), go to **Messaging > Content > Templates** and create your template (PIX, CARD, STATUS).
+1. In the [Twilio Console](https://console.twilio.com/), go to **Messaging > Content Template Builder** and create your template (PIX, CARD, STATUS).
 2. After approval, copy the resulting SID (starts with `HX`).
 3. Paste the SID into `mercado-pago-serverless/.env.local` under the corresponding variable (`PAYMENT_CONTENT_SID`, `CREDIT_CARD_CONTENT_SID`, `ORDER_STATUS_CONTENT_SID`).
 
