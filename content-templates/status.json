@@ -9,7 +9,7 @@
   },
   "types": {
     "twilio/text": {
-      "body": "Olá *{{name}}*, seu pagamento para o pedido de número *{{order_id}}* foi *{{status}}*. {{additional_message}}"
+      "body": "Olá *{{name}}*, seu pagamento para o pedido de número *{{order_id}}* foi *{{status}}*. {{additional_message}}. Obrigado!"
     }
   }
 }
